@@ -1,3 +1,6 @@
+import dotenv from 'dotenv';
+dotenv.config();
+
 import { handleSendEmail, handleVerifyConfig, handleSendOtp, handleVerifyOtp } from './emailHandler.mjs';
 
 export function zohoEmailPlugin() {
@@ -5,8 +8,21 @@ export function zohoEmailPlugin() {
     name: 'zoho-email-service',
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
+        // Set CORS headers
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+        if (req.method === 'OPTIONS') {
+          res.statusCode = 204;
+          res.end();
+          return;
+        }
+
+        const pathname = (req.url || '').split('?')[0].replace(/\/+$/, '');
+
         // Helper to parse JSON body
-        const parseJsonBody = () => new Promise((resolve, reject) => {
+        const parseJsonBody = () => new Promise((resolve) => {
           let body = '';
           req.on('data', chunk => { body += chunk; });
           req.on('end', () => {
@@ -16,10 +32,10 @@ export function zohoEmailPlugin() {
               resolve({});
             }
           });
-          req.on('error', reject);
+          req.on('error', () => resolve({}));
         });
 
-        // Mock express helpers
+        // Express-compatible response helpers
         res.status = (code) => {
           res.statusCode = code;
           return res;
@@ -31,28 +47,28 @@ export function zohoEmailPlugin() {
         };
 
         // 1. Auth: Send OTP
-        if (req.url === '/api/auth/send-otp' && req.method === 'POST') {
+        if (pathname === '/api/auth/send-otp' && req.method === 'POST') {
           req.body = await parseJsonBody();
           await handleSendOtp(req, res);
           return;
         }
 
         // 2. Auth: Verify OTP
-        if (req.url === '/api/auth/verify-otp' && req.method === 'POST') {
+        if (pathname === '/api/auth/verify-otp' && req.method === 'POST') {
           req.body = await parseJsonBody();
           await handleVerifyOtp(req, res);
           return;
         }
 
         // 3. Email: Send Bill / Report
-        if (req.url === '/api/email/send' && req.method === 'POST') {
+        if (pathname === '/api/email/send' && req.method === 'POST') {
           req.body = await parseJsonBody();
           await handleSendEmail(req, res);
           return;
         }
 
         // 4. Email: Verify Config
-        if (req.url === '/api/email/verify' && req.method === 'POST') {
+        if (pathname === '/api/email/verify' && req.method === 'POST') {
           req.body = await parseJsonBody();
           await handleVerifyConfig(req, res);
           return;
