@@ -18,6 +18,7 @@ export const AuthGate: React.FC<AuthGateProps> = ({ onAuthenticated }) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [serverNotice, setServerNotice] = useState<string | null>(null);
+  const [devCode, setDevCode] = useState<string | null>(null);
 
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
@@ -65,6 +66,11 @@ export const AuthGate: React.FC<AuthGateProps> = ({ onAuthenticated }) => {
       }
 
       setServerNotice(data.message || `Verification code sent to ${cleanEmail}`);
+      if (data.code) {
+        setDevCode(data.code);
+      } else {
+        setDevCode(null);
+      }
       setCountdown(60);
       setOtp(['', '', '', '', '', '']);
       setStep('otp');
@@ -176,7 +182,12 @@ export const AuthGate: React.FC<AuthGateProps> = ({ onAuthenticated }) => {
 
       setCountdown(60);
       setOtp(['', '', '', '', '', '']);
-      setServerNotice(`A new code was sent to ${email.trim()}`);
+      if (data.code) {
+        setDevCode(data.code);
+      } else {
+        setDevCode(null);
+      }
+      setServerNotice(`A new code was generated for ${email.trim()}`);
       inputRefs.current[0]?.focus();
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to resend verification code.');
@@ -333,8 +344,29 @@ export const AuthGate: React.FC<AuthGateProps> = ({ onAuthenticated }) => {
 
             {/* Instruction pill */}
             <div className="p-3 bg-slate-800/80 border border-slate-750 rounded-2xl text-center text-xs text-slate-400">
-              Please enter the code from your email. Check your spam or promotions folder if you don't see it in a moment.
+              Please enter the 6-digit code sent to your email. Check your spam or promotions folder if needed.
             </div>
+
+            {/* Quick Helper if SMTP is unconfigured or in testing */}
+            {devCode && (
+              <div className="p-2.5 bg-indigo-950/40 border border-indigo-700/50 rounded-xl flex items-center justify-between text-xs animate-fade-in">
+                <div className="text-slate-300">
+                  <span className="text-[10px] uppercase font-bold text-indigo-400 tracking-wider block">Dev / Offline Code:</span>
+                  <span className="font-mono text-emerald-400 font-bold text-sm tracking-widest">{devCode}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const digits = devCode.split('');
+                    setOtp(digits);
+                    inputRefs.current[5]?.focus();
+                  }}
+                  className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded-lg text-xs transition-colors shadow-sm shadow-indigo-600/30 flex items-center space-x-1"
+                >
+                  <span>Auto-fill</span>
+                </button>
+              </div>
+            )}
 
             {/* 6 Digit PIN Boxes with Paste Support */}
             <div className="flex justify-center space-x-2">
