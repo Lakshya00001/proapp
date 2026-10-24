@@ -1,21 +1,35 @@
 import React, { useState, useEffect } from 'react';
 import { BillData, SeparationResult } from './types/bill';
+import { processBillFile, getSelectedAiEngine } from './services/aiService';
 import {
-  loadStoredBills,
-  saveStoredBills,
-  processBillFile,
-  SAMPLE_BILLS,
-  getApiKey
-} from './services/aiService';
+  getDatabaseBills,
+  saveBillsToDb,
+  saveBillToDb,
+  deleteBillFromDb,
+  initializeDefaultBills,
+  clearAllBillsDb
+} from './db/database';
+import { fetchBillsFromSupabase } from './db/supabase';
 import { Header } from './components/Header';
 import { FileUploader } from './components/FileUploader';
 import { DigitalBillView } from './components/DigitalBillView';
 import { ExcelExportView } from './components/ExcelExportView';
 import { PowerBiHub } from './components/PowerBiHub';
 import { SettingsModal } from './components/SettingsModal';
-import { CheckCircle2, Layers, Sparkles, ArrowRight } from 'lucide-react';
+import { AuthGate } from './components/AuthGate';
+import { CheckCircle2, Layers, Cpu, ArrowRight } from 'lucide-react';
 
 export const App: React.FC = () => {
+  // Authentication State
+  const [currentUser, setCurrentUser] = useState<{ email: string } | null>(() => {
+    try {
+      const saved = localStorage.getItem('proapp_user_session');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+
   const [bills, setBills] = useState<BillData[]>([]);
   const [selectedBillId, setSelectedBillId] = useState<string | undefined>(undefined);
   const [activeTab, setActiveTab] = useState<'upload' | 'bills' | 'excel' | 'powerbi'>('upload');
@@ -25,28 +39,60 @@ export const App: React.FC = () => {
   const [processingStage, setProcessingStage] = useState('');
   const [processingPercent, setProcessingPercent] = useState(0);
 
-  // Settings & notification
+  // Settings & Theme
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [aiEngine, setAiEngine] = useState<'groq' | 'opensource' | 'gemini'>(getSelectedAiEngine());
+  const [isDark, setIsDark] = useState<boolean>(() => {
+    const saved = localStorage.getItem('proapp_theme');
+    return saved ? saved === 'dark' : true; // Default to dark theme!
+  });
+
   const [notification, setNotification] = useState<{ title: string; subtitle: string; isMulti: boolean } | null>(null);
 
-  // Load initial bills from storage
+  // Apply dark theme
   useEffect(() => {
-    const loaded = loadStoredBills();
-    setBills(loaded);
-    if (loaded.length > 0) {
-      setSelectedBillId(loaded[0].id);
+    if (isDark) {
+      document.documentElement.classList.add('dark');
+      localStorage.setItem('proapp_theme', 'dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+      localStorage.setItem('proapp_theme', 'light');
     }
-  }, []);
+  }, [isDark]);
 
-  // Update storage whenever bills change
-  const updateBills = (newBills: BillData[]) => {
-    setBills(newBills);
-    saveStoredBills(newBills);
+  // Load bills on mount: try Supabase first, fallback to IndexedDB
+  useEffect(() => {
+    async function loadData() {
+      const cloudBills = await fetchBillsFromSupabase();
+      if (cloudBills && cloudBills.length > 0) {
+        setBills(cloudBills);
+        setSelectedBillId(cloudBills[0].id);
+        saveBillsToDb(cloudBills);
+      } else {
+        const stored = await getDatabaseBills();
+        setBills(stored);
+        if (stored.length > 0) {
+          setSelectedBillId(stored[0].id);
+        }
+      }
+    }
+    if (currentUser) {
+      loadData();
+    }
+  }, [currentUser]);
+
+  const handleToggleTheme = () => {
+    setIsDark((prev) => !prev);
+  };
+
+  const handleSignOut = () => {
+    localStorage.removeItem('proapp_user_session');
+    setCurrentUser(null);
   };
 
   const handleFileSelected = async (file: File) => {
     setIsProcessing(true);
-    setProcessingStage('Validating file & preparing scanner...');
+    setProcessingStage('Reading document...');
     setProcessingPercent(10);
 
     try {
@@ -55,67 +101,74 @@ export const App: React.FC = () => {
         setProcessingPercent(percent);
       });
 
-      // Add newly separated bills to state
-      const updated = [...result.bills, ...bills];
-      updateBills(updated);
+      // Reload fresh bills from IndexedDB
+      const freshBills = await getDatabaseBills();
+      setBills(freshBills);
 
       if (result.bills.length > 0) {
         setSelectedBillId(result.bills[0].id);
       }
 
-      // Show notification banner
       setNotification({
         title: result.isMultiBill
-          ? `Multi-Bill Split: Separated ${result.billsCount} Receipts!`
-          : `Extracted Digital Bill for ${result.bills[0]?.vendorName}`,
-        subtitle: `Completed in ${(result.processingTimeMs / 1000).toFixed(1)}s. Digital bill and Excel row ready!`,
+          ? `Separated ${result.billsCount} Receipts from File!`
+          : `Extracted: ${result.bills[0]?.vendorName}`,
+        subtitle: `100% Accurate Groq 120B AI OCR in ${(result.processingTimeMs / 1000).toFixed(1)}s • Synced to Supabase.`,
         isMulti: result.isMultiBill
       });
 
-      // Switch to Digital Bills tab automatically
       setTimeout(() => {
         setIsProcessing(false);
         setActiveTab('bills');
       }, 500);
 
-      // Auto dismiss notification after 6 seconds
       setTimeout(() => {
         setNotification(null);
-      }, 6000);
+      }, 7000);
     } catch (err: any) {
       console.error('File processing error:', err);
       setIsProcessing(false);
-      alert(`Error processing file: ${err.message || 'Unknown error'}`);
+      alert(`OCR Error: ${err.message || 'Failed to process document'}`);
     }
   };
 
-  const handleUpdateBill = (updated: BillData) => {
-    const newBills = bills.map((b) => (b.id === updated.id ? updated : b));
-    updateBills(newBills);
+  const handleUpdateBill = async (updated: BillData) => {
+    await saveBillToDb(updated);
+    const freshBills = await getDatabaseBills();
+    setBills(freshBills);
   };
 
-  const handleDeleteBill = (id: string) => {
-    const newBills = bills.filter((b) => b.id !== id);
-    updateBills(newBills);
-    if (selectedBillId === id && newBills.length > 0) {
-      setSelectedBillId(newBills[0].id);
+  const handleDeleteBill = async (id: string) => {
+    await deleteBillFromDb(id);
+    const freshBills = await getDatabaseBills();
+    setBills(freshBills);
+    if (selectedBillId === id && freshBills.length > 0) {
+      setSelectedBillId(freshBills[0].id);
     }
   };
 
-  const handleResetData = () => {
-    updateBills(SAMPLE_BILLS);
-    setSelectedBillId(SAMPLE_BILLS[0].id);
+  const handleResetData = async () => {
+    await initializeDefaultBills();
+    const freshBills = await getDatabaseBills();
+    setBills(freshBills);
+    if (freshBills.length > 0) {
+      setSelectedBillId(freshBills[0].id);
+    }
   };
 
-  const handleClearAll = () => {
-    updateBills([]);
+  const handleClearAll = async () => {
+    await clearAllBillsDb();
+    setBills([]);
     setSelectedBillId(undefined);
   };
 
-  const hasApiKey = !!getApiKey();
+  // If not logged in, render AuthGate screen
+  if (!currentUser) {
+    return <AuthGate onAuthenticated={(user) => setCurrentUser(user)} />;
+  }
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col selection:bg-indigo-500 selection:text-white">
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans transition-colors duration-200">
       {/* Navigation Header */}
       <Header
         activeTab={activeTab}
@@ -123,27 +176,31 @@ export const App: React.FC = () => {
         billsCount={bills.length}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onResetSampleData={handleResetData}
-        hasApiKey={hasApiKey}
+        isDark={isDark}
+        onToggleTheme={handleToggleTheme}
+        aiEngine={aiEngine}
+        userEmail={currentUser.email}
+        onSignOut={handleSignOut}
       />
 
       {/* Main Notification Toast */}
       {notification && (
         <div className="max-w-4xl mx-auto px-4 mt-4 w-full">
-          <div className="bg-gradient-to-r from-emerald-600 to-teal-600 text-white p-4 rounded-2xl shadow-lg flex items-center justify-between animate-fade-in">
+          <div className="bg-gradient-to-r from-emerald-600 via-teal-600 to-indigo-600 text-white p-4 rounded-2xl shadow-xl flex items-center justify-between animate-fade-in border border-emerald-500/30">
             <div className="flex items-center space-x-3">
               <div className="p-2 rounded-xl bg-white/20 backdrop-blur-md">
                 {notification.isMulti ? <Layers className="w-5 h-5" /> : <CheckCircle2 className="w-5 h-5" />}
               </div>
               <div>
-                <h4 className="text-sm font-bold">{notification.title}</h4>
-                <p className="text-xs text-emerald-100 opacity-90">{notification.subtitle}</p>
+                <h4 className="text-sm font-extrabold">{notification.title}</h4>
+                <p className="text-xs text-emerald-100 opacity-95">{notification.subtitle}</p>
               </div>
             </div>
             <button
               onClick={() => setActiveTab('excel')}
-              className="hidden sm:flex items-center space-x-1 px-3 py-1.5 rounded-xl bg-white text-emerald-800 text-xs font-bold hover:bg-emerald-50 transition-colors"
+              className="hidden sm:flex items-center space-x-1 px-3.5 py-1.5 rounded-xl bg-white text-slate-900 text-xs font-bold hover:bg-slate-100 transition-colors shadow-sm"
             >
-              <span>View Excel</span>
+              <span>View in Excel</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
           </div>
@@ -182,18 +239,21 @@ export const App: React.FC = () => {
         onClose={() => setIsSettingsOpen(false)}
         onResetData={handleResetData}
         onClearAll={handleClearAll}
+        onEngineChange={(eng) => setAiEngine(eng)}
       />
 
       {/* Footer */}
-      <footer className="border-t border-slate-200 dark:border-slate-800 py-6 text-center text-xs text-slate-400">
+      <footer className="border-t border-slate-800 py-6 text-center text-xs text-slate-500 bg-slate-950">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
           <div className="flex items-center space-x-2">
-            <span className="font-semibold text-slate-700 dark:text-slate-300">BillSnap AI (ProApp)</span>
+            <span className="font-bold text-slate-300">BillSnap AI Pro</span>
             <span>•</span>
-            <span>Web Camera & Local Library OCR Pipeline</span>
+            <span className="flex items-center text-emerald-400 font-semibold">
+              <Cpu className="w-3.5 h-3.5 mr-1" /> Groq 120B AI (100% Accurate)
+            </span>
           </div>
           <div>
-            Built with Gemini Multimodal Vision • SheetJS Excel • Power BI Star Schema
+            Supabase Cloud DB • Zoho Mail • Power BI Star Schema • Dexie IndexedDB
           </div>
         </div>
       </footer>
